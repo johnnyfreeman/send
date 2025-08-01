@@ -1,3 +1,4 @@
+mod cli;
 mod executor;
 mod logging;
 mod masking;
