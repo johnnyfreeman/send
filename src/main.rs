@@ -1,24 +1,57 @@
+mod cli;
 mod executor;
 mod logging;
 mod masking;
-mod options;
 mod request;
 mod resolvers;
 mod response;
+
 use clap::Parser;
+use cli::{Cli, CollectionCommands, Commands, RequestCommands};
 use executor::Executor;
 use logging::init_logging;
-use options::Options;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let guard = init_logging()?;
 
-    let options = Options::parse();
+    match Cli::parse().command {
+        Commands::Collections { command } => match command {
+            CollectionCommands::Run {
+                collection,
+                output_options,
+            } => {
+                let requests = request::load_requests_from_toml(collection.as_str())?;
 
-    let requests = request::load_requests_from_toml(options.collection.as_str())?;
+                let cloned_requests: Vec<_> = requests.clone();
 
-    Executor::new(requests, options).execute().await?;
+                let mut executor = Executor::new(requests);
+
+                for request in cloned_requests {
+                    let response = executor.execute_request(request.clone()).await?;
+
+                    executor
+                        .render_output(response, output_options.clone())
+                        .await?;
+                }
+            }
+        },
+        Commands::Requests { command } => match command {
+            RequestCommands::Run {
+                collection,
+                request,
+                output_options,
+            } => {
+                let requests = request::load_requests_from_toml(collection.as_str())?;
+
+                let mut executor = Executor::new(requests);
+
+                let response = executor.execute_request_named(request).await?;
+
+                executor.render_output(response, output_options).await?;
+            }
+        },
+    }
 
     drop(guard);
 

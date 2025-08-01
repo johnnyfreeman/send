@@ -1,5 +1,5 @@
+use crate::cli::OutputOptions;
 use crate::masking::mask_json;
-use crate::options::Options;
 use crate::request::{Dependencies, Dependency, Request, RequestBody};
 use crate::resolvers::env_var_resolver::EnvVarResolver;
 use crate::resolvers::one_password_resolver::{OnePasswordResolver, OnePasswordResolverError};
@@ -52,7 +52,6 @@ static ENV_FILES_CACHE: Lazy<Mutex<HashMap<String, HashMap<String, String>>>> =
 #[derive(Debug)]
 pub struct Executor {
     requests: HashMap<String, Request>,
-    options: Options,
     http: Client,
     env_var_resolver: EnvVarResolver,
     prompt_resolver: PromptResolver,
@@ -61,13 +60,12 @@ pub struct Executor {
 }
 
 impl Executor {
-    pub fn new(requests: Vec<Request>, options: Options) -> Self {
+    pub fn new(requests: Vec<Request>) -> Self {
         Self {
             requests: requests
                 .into_iter()
                 .map(|request| (request.name.clone(), request))
                 .collect(),
-            options,
             http: Client::new(),
             env_var_resolver: EnvVarResolver::new(),
             prompt_resolver: PromptResolver::new(),
@@ -76,32 +74,17 @@ impl Executor {
         }
     }
 
-    pub async fn execute(&mut self) -> Result<(), ExecutionError> {
-        match &self.options.request {
-            Some(request_name) => {
-                let request = self
-                    .requests
-                    .get(request_name)
-                    .ok_or(ExecutionError::RequestNotFound {
-                        request: request_name.to_owned(),
-                    })?
-                    .clone();
+    pub async fn execute_request_named(
+        &mut self,
+        request: String,
+    ) -> Result<Response, ExecutionError> {
+        let request = self
+            .requests
+            .get(&request)
+            .cloned()
+            .ok_or_else(|| ExecutionError::RequestNotFound { request })?;
 
-                let response = self.execute_request(request.clone()).await?;
-
-                self.render_output(response).await?;
-            }
-            None => {
-                let cloned_requests: Vec<_> = self.requests.values().cloned().collect();
-
-                for request in cloned_requests {
-                    let response = self.execute_request(request.clone()).await?;
-
-                    self.render_output(response).await?;
-                }
-            }
-        }
-        Ok(())
+        self.execute_request(request).await
     }
 
     pub async fn execute_request(&mut self, request: Request) -> Result<Response, ExecutionError> {
@@ -220,9 +203,13 @@ impl Executor {
         Ok(response)
     }
 
-    async fn render_output(&mut self, response: Response) -> Result<(), ExecutionError> {
-        if !self.options.hide_status {
-            if self.options.raw_output {
+    pub async fn render_output(
+        &mut self,
+        response: Response,
+        options: OutputOptions,
+    ) -> Result<(), ExecutionError> {
+        if !options.hide_status {
+            if options.raw_output {
                 println!(
                     "{}: {}",
                     response.status.as_str(),
@@ -249,10 +236,10 @@ impl Executor {
             }
         }
 
-        if self.options.show_headers {
+        if options.show_headers {
             let mut headers = response.headers.clone();
 
-            if !self.options.disable_masking {
+            if !options.disable_masking {
                 for (_key, value) in &mut headers {
                     if let Some(value_str) = value.to_str().ok() {
                         let masked_value = mask_json(
@@ -266,7 +253,7 @@ impl Executor {
                 }
             }
 
-            if self.options.raw_output {
+            if options.raw_output {
                 for (key, value) in headers {
                     println!(
                         "{}: {}",
@@ -290,16 +277,16 @@ impl Executor {
             }
         }
 
-        if !self.options.hide_body {
+        if !options.hide_body {
             let mut body = serde_json::from_str::<serde_json::Value>(&response.text)
                 .map_err(|error| ExecutionError::Unknown(error.to_string()))?;
 
-            if !self.options.disable_masking {
+            if !options.disable_masking {
                 body = mask_json(body, &response.request.masking_rules)
                     .map_err(|error| ExecutionError::Unknown(error.to_string()))?;
             }
 
-            if self.options.raw_output {
+            if options.raw_output {
                 println!(
                     "{}",
                     serde_json::to_string(&body)
